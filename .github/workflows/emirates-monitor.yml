@@ -38,7 +38,7 @@ jobs:
           SMTP_SERVER: "smtp.gmail.com"
           SMTP_PORT: "587"
         run: |
-          python monitor.py
+          python checker.py
 
       - name: Save Updated State File
         if: always()
