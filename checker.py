@@ -89,6 +89,13 @@ def fetch_application_page():
             print(f"Navigating to login page: {LOGIN_URL}...")
             page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
 
+            # Dismiss the OneTrust cookie banner if it appears
+            cookie_btn = page.locator("#onetrust-accept-btn-handler").first
+            if cookie_btn.is_visible():
+                print("Accepting cookies banner...")
+                cookie_btn.click(force=True)
+                page.wait_for_timeout(1000)
+
             email_input = page.locator(
                 "input[type='email'], input[name='email'], input[id*='email'], input[id*='user']"
             ).first
@@ -107,7 +114,8 @@ def fetch_application_page():
                 "button[type='submit'], input[type='submit'], button:has-text('Sign In'), button:has-text('Log In')"
             ).first
             if submit_btn.is_visible():
-                submit_btn.click()
+                print("Clicking submit button...")
+                submit_btn.click(force=True)
             else:
                 password_input.press("Enter")
 
@@ -152,7 +160,7 @@ def parse_and_check(html_content):
         print("Status change detected! Sending alert...")
         if send_email_alert(previous_status, current_status, page_text):
             seen_data[APPLICATION_KEY] = current_status
-            save_seen_state(save_seen_state(seen_data))
+            save_seen_state(seen_data)
         else:
             print("Failed to send email. Retaining state.")
         return
