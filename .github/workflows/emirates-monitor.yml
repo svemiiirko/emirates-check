@@ -1,0 +1,49 @@
+name: Emirates Application Status Checker
+
+on:
+  schedule:
+    # Runs every 2 hours
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-emirates:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright beautifulsoup4 requests python-dotenv
+          playwright install --with-deps chromium
+
+      - name: Run Emirates Monitor Script
+        env:
+          EMIRATES_EMAIL: ${{ secrets.EMIRATES_EMAIL }}
+          EMIRATES_PASSWORD: ${{ secrets.EMIRATES_PASSWORD }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          SMTP_SERVER: "smtp.gmail.com"
+          SMTP_PORT: "587"
+        run: |
+          python monitor.py
+
+      - name: Save Updated State File
+        if: always()
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add emirates_app_state.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "update emirates app state" && git push)
