@@ -1,175 +1,107 @@
-import json
 import os
 import re
-import smtplib
-from email.mime.text import MIMEText
-from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-# Load .env file automatically if present
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-TARGET_URL = "https://external.emiratesgroupcareers.com/en_US/careersmarketplace/ProfileJobApplications"
+# Konfiguracija iz Environment Variables (GitHub Secrets)
+EMAIL = os.environ.get("EMIRATES_EMAIL")
+PASSWORD = os.environ.get("EMIRATES_PASSWORD")
 LOGIN_URL = "https://external.emiratesgroupcareers.com/en_US/careersmarketplace/Login"
+TARGET_URL = "https://external.emiratesgroupcareers.com/en_US/careersmarketplace/ProfileJobApplications"
 
-USER_EMAIL = os.getenv("EMIRATES_EMAIL")
-USER_PASSWORD = os.getenv("EMIRATES_PASSWORD")
-STATE_FILE = "emirates_app_state.json"
-
-SENDER_EMAIL = os.getenv("SENDER_EMAIL")
-SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
-RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-
-APPLICATION_KEY = "emirates_job_application_status"
-EXPECTED_STATUS = "Application Under Review"
-
-
-def send_email_alert(old_status, new_status, full_text=""):
-    if not SENDER_EMAIL or not SENDER_PASSWORD or not RECEIVER_EMAIL:
-        print("Missing email configuration. Skipping email alert.")
-        return False
-
-    subject = "Emirates Job Application Status Update!"
-    body = (
-        f"Your Emirates job application status has changed!\n\n"
-        f"Previous Status: {old_status}\n"
-        f"New Detected Status: {new_status}\n\n"
-        f"Context snippet:\n{full_text[:500]}\n\n"
-        f"Check your portal: {TARGET_URL}"
-    )
-
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = subject
-    msg["From"] = SENDER_EMAIL
-    msg["To"] = RECEIVER_EMAIL
-
-    try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
-            server.starttls()
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, [RECEIVER_EMAIL], msg.as_string())
-
-        print("Alert email sent successfully!")
-        return True
-    except Exception as e:
-        print(f"Failed to send alert email: {e}")
-        return False
-
-
-def load_seen_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                return data
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"Error reading state file: {e}")
-    return {}
-
-
-def save_seen_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
-
-
-def fetch_application_page():
+def run_checker():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
+        # Postavljanje standardnog User-Agenta kako nas bezbjednosni filteri ne bi tretirali kao bota
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
         page = context.new_page()
 
+        print(f"Navigating to login page: {LOGIN_URL}...")
+        page.goto(LOGIN_URL, wait_until="networkidle")
+
+        # Prihvatanje kolačića ako se pojavio banner
         try:
-            print(f"Navigating to login page: {LOGIN_URL}...")
-            page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
-
-            # Dismiss the OneTrust cookie banner if it appears
-            cookie_btn = page.locator("#onetrust-accept-btn-handler").first
-            if cookie_btn.is_visible():
+            cookie_btn = page.query_selector("button:has-text('Accept'), button:has-text('Agree'), #onetrust-accept-btn-handler")
+            if cookie_btn:
                 print("Accepting cookies banner...")
-                cookie_btn.click(force=True)
+                cookie_btn.click()
                 page.wait_for_timeout(1000)
+        except Exception as e:
+            print(f"Cookie banner check passed/skipped: {e}")
 
-            email_input = page.locator(
-                "input[type='email'], input[name='email'], input[id*='email'], input[id*='user']"
-            ).first
-            if email_input.is_visible():
-                print("Entering email...")
-                email_input.fill(USER_EMAIL)
+        # Unos kredencijala
+        print("Entering email...")
+        page.fill("input[type='email'], input[name='email'], input[id*='email']", EMAIL)
+        
+        print("Entering password...")
+        page.fill("input[type='password'], input[name='password'], input[id*='password']", PASSWORD)
 
-            password_input = page.locator(
-                "input[type='password'], input[name='password']"
-            ).first
-            if password_input.is_visible():
-                print("Entering password...")
-                password_input.fill(USER_PASSWORD)
+        print("Clicking submit button...")
+        page.click("button[type='submit'], input[type='submit'], button:has-text('Log in'), button:has-text('Login')")
+        
+        # Čekanje da se autentifikacija završi
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(3000)
 
-            submit_btn = page.locator(
-                "button[type='submit'], input[type='submit'], button:has-text('Sign In'), button:has-text('Log In')"
-            ).first
-            if submit_btn.is_visible():
-                print("Clicking submit button...")
-                submit_btn.click(force=True)
-            else:
-                password_input.press("Enter")
+        print(f"Navigating to target page: {TARGET_URL}...")
+        page.goto(TARGET_URL, wait_until="networkidle")
+        
+        # Eksplicitno čekanje da se dinamička tabela sa prijavama učita u DOM
+        page.wait_for_timeout(5000)
 
-            page.wait_for_load_state("networkidle", timeout=60000)
-            page.wait_for_timeout(3000)
+        page_content = page.content()
+        page_text_lower = page_content.lower()
 
-            print(f"Navigating to target page: {TARGET_URL}...")
-            page.goto(TARGET_URL, wait_until="networkidle", timeout=60000)
-            page.wait_for_timeout(3000)
-
-            return page.content()
-
-        finally:
+        # -------------------------------------------------------------
+        # SIGURNOSNA PROVJERA: Da li smo zapravo i dalje na Login stranici?
+        # -------------------------------------------------------------
+        if "already registered?" in page_text_lower or "forgot your password?" in page_text_lower:
+            print("❌ UPOZORENJE: Skripta je preusmjerena na Login stranicu! (Sesija nije uspjela / Rate-limit)")
+            print("Status provjera preskočena kako se ne bi slali lažni alarmi.")
+            # Sačuvaj HTML za analizu zašto login nije uspio
+            with open("login_failed_debug.html", "w", encoding="utf-8") as f:
+                f.write(page_content)
             browser.close()
+            return
 
+        # -------------------------------------------------------------
+        # ANALIZA STATUSES NA PROFILU
+        # -------------------------------------------------------------
+        # Provjera da li postoji uobičajeni status (case-insensitive)
+        has_under_review = "application under review" in page_text_lower
+        
+        print(f"Has 'Application Under Review': {has_under_review}")
 
-def parse_and_check(html_content):
-    soup = BeautifulSoup(html_content, "html.parser")
-    seen_data = load_seen_state()
-
-    page_text = soup.get_text(" ", strip=True)
-
-    has_expected_status = bool(
-        re.search(r"Application\s+Under\s+Review", page_text, re.IGNORECASE)
-    )
-
-    current_status = EXPECTED_STATUS if has_expected_status else "STATUS_CHANGED"
-
-    print(f"Has '{EXPECTED_STATUS}': {has_expected_status}")
-    print(f"Current detected status: {current_status}")
-
-    if APPLICATION_KEY not in seen_data:
-        print("No previous state stored. Saving initial baseline:", current_status)
-        seen_data[APPLICATION_KEY] = current_status
-        save_seen_state(seen_data)
-        return
-
-    previous_status = seen_data[APPLICATION_KEY]
-    print(f"Previous status: {previous_status}")
-
-    if previous_status == EXPECTED_STATUS and current_status != EXPECTED_STATUS:
-        print("Status change detected! Sending alert...")
-        if send_email_alert(previous_status, current_status, page_text):
-            seen_data[APPLICATION_KEY] = current_status
-            save_seen_state(seen_data)
+        if has_under_review:
+            print("Current detected status: Application Under Review")
+            print("State synchronized: Nema promjene statusa.")
         else:
-            print("Failed to send email. Retaining state.")
-        return
+            print("⚠️ DETEKOVANA PROMJENA STATUS / STATUS_CHANGED!")
+            
+            # Sačuvaj tačan HTML u trenutku detekcije promjene
+            with open("status_change_debug.html", "w", encoding="utf-8") as f:
+                f.write(page_content)
+            
+            # Pokušaj izvlačenja tačnog teksta iz tabele radi preciznijeg alerta
+            detected_status = "STATUS_CHANGED (Potrebna ručna provjera na portalu)"
+            if "under process" in page_text_lower:
+                detected_status = "Application Under Process"
+            elif "shortlisted" in page_text_lower:
+                detected_status = "Shortlisted"
+            elif "interview" in page_text_lower:
+                detected_status = "Interview Scheduled / Invited"
 
-    seen_data[APPLICATION_KEY] = current_status
-    save_seen_state(seen_data)
-    print("State synchronized:", current_status)
+            print(f"Novi identifikovani status: {detected_status}")
+            
+            # Ovjde pozivaš tvoju funkciju za slanje maila
+            send_alert_email(detected_status)
 
+        browser.close()
+
+def send_alert_email(new_status):
+    # Ovdje zadrži tvoju postojeću logiku za slanje e-maila
+    print(f"Alert email triggers for status: {new_status}")
 
 if __name__ == "__main__":
-    html = fetch_application_page()
-    parse_and_check(html)
+    run_checker()
