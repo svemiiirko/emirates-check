@@ -1,16 +1,13 @@
-name: Emirates Application Status Checker
+name: Emirates Application Monitor
 
 on:
   schedule:
-    # Runs every 2 hours
-    - cron: '0 */2 * * *'
-  workflow_dispatch:
-
-permissions:
-  contents: write
+    # Pokreće se svaka 2 sata između 09:00 i 17:00 po vremenu u Dubaiju (05:00 do 13:00 UTC)
+    - cron: '0 5-13/2 * * *'
+  workflow_dispatch: # Omogućava i ručno pokretanje po potrebi
 
 jobs:
-  check-emirates:
+  check-status:
     runs-on: ubuntu-latest
 
     steps:
@@ -22,28 +19,23 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install playwright beautifulsoup4 requests python-dotenv
+          pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: Run Emirates Monitor Script
+      - name: Run status checker
         env:
           EMIRATES_EMAIL: ${{ secrets.EMIRATES_EMAIL }}
           EMIRATES_PASSWORD: ${{ secrets.EMIRATES_PASSWORD }}
-          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
-          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
-          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
-          SMTP_SERVER: "smtp.gmail.com"
-          SMTP_PORT: "587"
         run: |
           python checker.py
 
-      - name: Save Updated State File
+      - name: Upload HTML debug artifact on failure/change
         if: always()
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add emirates_app_state.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "update emirates app state" && git push)
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-html-files
+          path: "*.html"
+          retention-days: 7
